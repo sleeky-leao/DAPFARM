@@ -1,18 +1,21 @@
 require("dotenv").config();
+
 const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
-const { initiateSTKPush, querySTKPush } = require("./mpesa");
-/*const SQLiteSessionStore = require("./session-store");*/
-//const SQLiteSessionStore = require("./session-store");
+const { querySTKPush } = require("./mpesa");
 
 const express = require("express");
 const cors = require("cors");
 const session = require("express-session");
+const PgSession = require("connect-pg-simple")(session);
 const bcrypt = require("bcryptjs");
-const db = require("./database");
+
+const { pool, initDatabase } = require("./database");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+app.set("trust proxy", 1);
 
 app.use(express.json({ limit: "10kb" }));
 app.use(helmet());
@@ -25,12 +28,15 @@ app.use(cors({
     credentials: true
 }));
 
-// Ensure a session secret is configured
 if (!process.env.SESSION_SECRET) {
     throw new Error("SESSION_SECRET is missing from .env");
 }
 
 app.use(session({
+    store: new PgSession({
+        pool,
+        createTableIfMissing: true
+    }),
     name: "dapfarm.sid",
     secret: process.env.SESSION_SECRET,
     resave: false,
@@ -42,6 +48,7 @@ app.use(session({
         maxAge: 1000 * 60 * 60 * 2
     }
 }));
+
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 5,
@@ -51,6 +58,7 @@ const loginLimiter = rateLimit({
         message: "Too many login attempts. Please try again after 15 minutes."
     }
 });
+
 const orderLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 10,
@@ -60,10 +68,12 @@ const orderLimiter = rateLimit({
         message: "Too many orders submitted. Please try again later."
     }
 });
+
 // Test route
 app.get("/", (req, res) => {
     res.send("DapFarm backend is running!");
 });
+
 // Admin login
 app.post("/api/admin/login", loginLimiter, async (req, res) => {
     const { username, password } = req.body;
@@ -92,27 +102,27 @@ app.post("/api/admin/login", loginLimiter, async (req, res) => {
             });
         }
 
-       req.session.regenerate((error) => {
-    if (error) {
-        return res.status(500).json({
-            message: "Unable to create login session."
-        });
-    }
+        req.session.regenerate((error) => {
+            if (error) {
+                return res.status(500).json({
+                    message: "Unable to create login session."
+                });
+            }
 
-    req.session.admin = true;
+            req.session.admin = true;
 
-    req.session.save((saveError) => {
-        if (saveError) {
-            return res.status(500).json({
-                message: "Unable to save login session."
+            req.session.save((saveError) => {
+                if (saveError) {
+                    return res.status(500).json({
+                        message: "Unable to save login session."
+                    });
+                }
+
+                res.json({
+                    message: "Login successful!"
+                });
             });
-        }
-
-        res.json({
-            message: "Login successful!"
         });
-    });
-});
 
     } catch (error) {
         console.error("Login error:", error);
@@ -122,6 +132,7 @@ app.post("/api/admin/login", loginLimiter, async (req, res) => {
         });
     }
 });
+
 // Admin logout
 app.post("/api/admin/logout", (req, res) => {
     req.session.destroy((error) => {
@@ -131,18 +142,19 @@ app.post("/api/admin/logout", (req, res) => {
             });
         }
 
-       res.clearCookie("dapfarm.sid", {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/"
-});
+        res.clearCookie("dapfarm.sid", {
+            httpOnly: true,
+            sameSite: "lax",
+            secure: process.env.NODE_ENV === "production",
+            path: "/"
+        });
 
         res.json({
             message: "Logged out successfully!"
         });
     });
 });
+
 // Protect admin routes
 function requireAdmin(req, res, next) {
     if (req.session.admin) {
@@ -154,8 +166,7 @@ function requireAdmin(req, res, next) {
     });
 }
 
-// Receive M-Pesa payment confirmation
-// Receive and verify M-Pesa payment confirmation
+// M-Pesa payment callback
 app.post("/api/mpesa/callback", async (req, res) => {
     try {
         const callback = req.body?.Body?.stkCallback;
@@ -166,7 +177,6 @@ app.post("/api/mpesa/callback", async (req, res) => {
             });
         }
 
-        // Only investigate successful payment callbacks
         if (Number(callback.ResultCode) !== 0) {
             return res.json({
                 ResultCode: 0,
@@ -176,11 +186,14 @@ app.post("/api/mpesa/callback", async (req, res) => {
 
         const checkoutRequestId = callback.CheckoutRequestID;
 
-        const order = db.prepare(`
-            SELECT id, total, payment_status
-            FROM orders
-            WHERE checkout_request_id = ?
-        `).get(checkoutRequestId);
+        const orderResult = await pool.query(
+            `SELECT id, total, payment_status
+             FROM orders
+             WHERE checkout_request_id = $1`,
+            [checkoutRequestId]
+        );
+
+        const order = orderResult.rows[0];
 
         if (!order) {
             return res.json({
@@ -196,7 +209,6 @@ app.post("/api/mpesa/callback", async (req, res) => {
             });
         }
 
-        // Verify payment directly with Safaricom
         const verification = await querySTKPush(checkoutRequestId);
 
         if (Number(verification.ResultCode) !== 0) {
@@ -223,12 +235,13 @@ app.post("/api/mpesa/callback", async (req, res) => {
             });
         }
 
-        db.prepare(`
-            UPDATE orders
-            SET payment_status = 'Paid',
-                mpesa_receipt = ?
-            WHERE id = ?
-        `).run(receipt, order.id);
+        await pool.query(
+            `UPDATE orders
+             SET payment_status = 'Paid',
+                 mpesa_receipt = $1
+             WHERE id = $2`,
+            [receipt, order.id]
+        );
 
         console.log("Verified M-Pesa payment:", receipt);
 
@@ -246,7 +259,6 @@ app.post("/api/mpesa/callback", async (req, res) => {
     }
 });
 
-// Receive and save customer orders
 // Official DapFarm product catalogue
 const products = {
     "Strawberry Probiotic Yoghurt": 250,
@@ -256,8 +268,9 @@ const products = {
     "Vanilla Kefir Milk": 250,
     "Blueberry Kefir Milk": 250
 };
-app.post("/api/orders", orderLimiter, (req, res) => {
 
+// Receive and save customer orders
+app.post("/api/orders", orderLimiter, async (req, res) => {
     const {
         customerName,
         phone,
@@ -265,7 +278,6 @@ app.post("/api/orders", orderLimiter, (req, res) => {
         items
     } = req.body;
 
-    // VALIDATE CUSTOMER DETAILS
     if (
         typeof customerName !== "string" ||
         typeof phone !== "string" ||
@@ -282,7 +294,6 @@ app.post("/api/orders", orderLimiter, (req, res) => {
         });
     }
 
-    // VALIDATE KENYAN PHONE NUMBER
     const cleanPhone = phone.trim();
 
     if (!/^(?:(?:\+254|254)?[17]\d{8}|0[17]\d{8})$/.test(cleanPhone)) {
@@ -291,7 +302,6 @@ app.post("/api/orders", orderLimiter, (req, res) => {
         });
     }
 
-    // VALIDATE ORDER ITEMS
     if (!Array.isArray(items) || items.length === 0) {
         return res.status(400).json({
             message: "Your cart is empty or invalid."
@@ -301,7 +311,6 @@ app.post("/api/orders", orderLimiter, (req, res) => {
     const validatedItems = [];
 
     for (const item of items) {
-
         if (!item || typeof item.name !== "string") {
             return res.status(400).json({
                 message: "Invalid cart item."
@@ -325,22 +334,19 @@ app.post("/api/orders", orderLimiter, (req, res) => {
 
         validatedItems.push({
             name: item.name,
-            price: price,
+            price,
             quantity: item.quantity
         });
     }
 
-    // CALCULATE ORDER TOTAL
     const calculatedTotal = validatedItems.reduce(
         (sum, item) => sum + item.price * item.quantity,
         0
     );
 
-    // SAVE ORDER TO DATABASE
     try {
-
-        const statement = db.prepare(`
-            INSERT INTO orders (
+        const result = await pool.query(
+            `INSERT INTO orders (
                 customer_name,
                 phone,
                 delivery_location,
@@ -348,47 +354,46 @@ app.post("/api/orders", orderLimiter, (req, res) => {
                 total,
                 payment_status
             )
-            VALUES (?, ?, ?, ?, ?, 'Pending')
-        `);
-
-        const result = statement.run(
-            customerName.trim(),
-            cleanPhone,
-            deliveryLocation.trim(),
-            JSON.stringify(validatedItems),
-            calculatedTotal
+            VALUES ($1, $2, $3, $4, $5, 'Pending')
+            RETURNING id`,
+            [
+                customerName.trim(),
+                cleanPhone,
+                deliveryLocation.trim(),
+                JSON.stringify(validatedItems),
+                calculatedTotal
+            ]
         );
 
-        const orderId = result.lastInsertRowid;
+        const orderId = result.rows[0].id;
 
         console.log("Order successfully saved:", orderId);
 
         res.status(201).json({
             message: "Your order has been received successfully!",
-            orderId: orderId
+            orderId
         });
 
     } catch (error) {
-
         console.error("Order saving error:", error);
 
         res.status(500).json({
             message: "Unable to receive your order. Please try again."
         });
     }
-
 });
-// Retrieve orders (admin only)
-app.get("/api/orders", requireAdmin, (req, res) => {
-    try {
-        const orders = db.prepare(`
-SELECT *
-FROM orders
-WHERE archived = 0
-ORDER BY created_at DESC
-        `).all();
 
-        res.json(orders);
+// Retrieve orders (admin only)
+app.get("/api/orders", requireAdmin, async (req, res) => {
+    try {
+        const result = await pool.query(`
+            SELECT *
+            FROM orders
+            WHERE archived = FALSE
+            ORDER BY created_at DESC
+        `);
+
+        res.json(result.rows);
 
     } catch (error) {
         console.error("Error retrieving orders:", error);
@@ -398,16 +403,20 @@ ORDER BY created_at DESC
         });
     }
 });
+
 // Archive a delivered order (admin only)
-app.patch("/api/orders/:id/archive", requireAdmin, (req, res) => {
+app.patch("/api/orders/:id/archive", requireAdmin, async (req, res) => {
     try {
         const orderId = req.params.id;
 
-        const order = db.prepare(`
-            SELECT id, status, archived
-            FROM orders
-            WHERE id = ?
-        `).get(orderId);
+        const result = await pool.query(
+            `SELECT id, status, archived
+             FROM orders
+             WHERE id = $1`,
+            [orderId]
+        );
+
+        const order = result.rows[0];
 
         if (!order) {
             return res.status(404).json({
@@ -421,17 +430,18 @@ app.patch("/api/orders/:id/archive", requireAdmin, (req, res) => {
             });
         }
 
-        if (order.archived === 1) {
+        if (order.archived) {
             return res.status(400).json({
                 message: "This order is already archived."
             });
         }
 
-        db.prepare(`
-            UPDATE orders
-            SET archived = 1
-            WHERE id = ?
-        `).run(orderId);
+        await pool.query(
+            `UPDATE orders
+             SET archived = TRUE
+             WHERE id = $1`,
+            [orderId]
+        );
 
         res.json({
             message: "Order archived successfully."
@@ -445,11 +455,11 @@ app.patch("/api/orders/:id/archive", requireAdmin, (req, res) => {
         });
     }
 });
+
 // Update an order's status
-app.put("/api/orders/:id/status", requireAdmin, (req, res) => {
+app.put("/api/orders/:id/status", requireAdmin, async (req, res) => {
     const orderId = req.params.id;
     const { status } = req.body;
-    console.log("Received status:", status);
 
     const allowedStatuses = [
         "Pending",
@@ -464,23 +474,47 @@ app.put("/api/orders/:id/status", requireAdmin, (req, res) => {
         });
     }
 
-    const result = db.prepare(`
-        UPDATE orders
-        SET status = ?
-        WHERE id = ?
-    `).run(status, orderId);
+    try {
+        const result = await pool.query(
+            `UPDATE orders
+             SET status = $1
+             WHERE id = $2
+             RETURNING id`,
+            [status, orderId]
+        );
 
-    if (result.changes === 0) {
-        return res.status(404).json({
-            message: "Order not found."
+        if (result.rowCount === 0) {
+            return res.status(404).json({
+                message: "Order not found."
+            });
+        }
+
+        res.json({
+            message: "Order status updated successfully!"
+        });
+
+    } catch (error) {
+        console.error("Status update error:", error);
+
+        res.status(500).json({
+            message: "Unable to update order status."
         });
     }
-
-    res.json({
-        message: "Order status updated successfully!"
-    });
 });
 
-app.listen(PORT, () => {
-    console.log(`DapFarm server is running at http://localhost:${PORT}`);
+// Initialize database before starting server
+async function startServer() {
+    try {
+        await initDatabase();
+
+    app.listen(PORT, "0.0.0.0", () => {
+    console.log(`DapFarm server is running on port ${PORT}`);
 });
+
+    } catch (error) {
+        console.error("Unable to start DapFarm:", error);
+        process.exit(1);
+    }
+}
+
+startServer();

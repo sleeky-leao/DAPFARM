@@ -68,7 +68,9 @@ document.getElementById("total-revenue").textContent =
             return;
         }
 ordersContainer.innerHTML = orders.map(function(order) {
-    const items = JSON.parse(order.items);
+    const items = typeof order.items === "string"
+    ? JSON.parse(order.items)
+    : order.items;
     const whatsappMessage = `
 Hello ${order.customer_name}! 👋
 
