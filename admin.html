@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DapFarm | Admin Dashboard</title>
+    <link rel="stylesheet" href="./style.css">
+    <script src="admin.js" defer></script>
+</head>
+
+<body class="admin-page">
+
+    <header class="admin-header">
+        <h1>DapFarm Admin Dashboard</h1>
+        
+        <p>Manage your customer orders</p>
+
+        <button id="logout-button">Logout</button>
+    </header>
+
+    <main>
+        <section id="orders">
+            <div class="stats-container">
+            
+                <div class="stat-card">
+                    <h3>Total Orders</h3>
+                    <p id="total-orders">0</p>
+                </div>
+            
+                <div class="stat-card">
+                    <h3>Pending</h3>
+                    <p id="pending-orders">0</p>
+                </div>
+            
+                <div class="stat-card">
+                    <h3>Confirmed</h3>
+                    <p id="confirmed-orders">0</p>
+                </div>
+            
+                <div class="stat-card">
+                    <h3>Delivered</h3>
+                    <p id="delivered-orders">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Delivered Revenue</h3>
+                    <p id="total-revenue">KSh 0</p>
+                </div>
+            
+            </div>
+            <h2>Customer Orders</h2>
+            <button id="refresh-orders">Refresh Orders</button>
+            <div class="order-search">
+                <input type="text" id="search-orders" placeholder="Search by customer name or phone...">
+            
+                <select id="status-filter">
+                    <option value="all">All Orders</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Confirmed">Confirmed</option>
+                    <option value="Delivered">Delivered</option>
+                    <option value="Cancelled">Cancelled</option>
+                </select>
+            </div>
+
+            <div id="orders-container">
+                Loading orders...
+            </div>
+        </section>
+    </main>
+
+</body>
+
+</html>
