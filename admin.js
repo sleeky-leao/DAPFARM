@@ -25,7 +25,7 @@ function escapeHTML(value) {
 }
 async function loadOrders() {
     try {
-       const response = await fetch("http://127.0.0.1:3000/api/orders", {
+       const response = await fetch("https://dapfarm.onrender.com/api/orders", {
     credentials: "include"
 });
 if (response.status === 401) {
@@ -159,7 +159,7 @@ ordersContainer.addEventListener("change", async function(event) {
 
         try {
             const response = await fetch(
-                `http://127.0.0.1:3000/api/orders/${orderId}/status`,
+                `https://dapfarm.onrender.com/api/orders/${orderId}/status`,
                 {
                     method: "PUT",
                     credentials: "include",
@@ -201,7 +201,7 @@ ordersContainer.addEventListener("click", async function(event) {
 
     try {
         const response = await fetch(
-            `http://127.0.0.1:3000/api/orders/${orderId}/archive`,
+            `https://dapfarm.onrender.com/api/orders/${orderId}/archive`,
             {
                 method: "PATCH",
                 credentials: "include"
@@ -265,7 +265,7 @@ const logoutButton = document.getElementById("logout-button");
 logoutButton.addEventListener("click", async function() {
     try {
         const response = await fetch(
-            "http://127.0.0.1:3000/api/admin/logout",
+            "https://dapfarm.onrender.com/api/admin/logout",
             {
                 method: "POST",
                 credentials: "include"
