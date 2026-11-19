@@ -181,3 +181,28 @@ checkoutForm.addEventListener("submit", async function(event) {
 });
 // INITIAL CART DISPLAY
 updateCart();
+// MOBILE HAMBURGER MENU
+
+const mobileMenuToggle = document.getElementById("menu-toggle");
+const mobileNavLinks = document.getElementById("nav-links");
+
+mobileMenuToggle.addEventListener("click", () => {
+    mobileNavLinks.classList.toggle("active");
+
+    const isOpen = mobileNavLinks.classList.contains("active");
+
+    mobileMenuToggle.setAttribute("aria-expanded", isOpen);
+    mobileMenuToggle.setAttribute(
+        "aria-label",
+        isOpen ? "Close navigation menu" : "Open navigation menu"
+    );
+});
+
+// Close menu after clicking a navigation link
+mobileNavLinks.querySelectorAll("a").forEach(link => {
+    link.addEventListener("click", () => {
+        mobileNavLinks.classList.remove("active");
+        mobileMenuToggle.setAttribute("aria-expanded", "false");
+        mobileMenuToggle.setAttribute("aria-label", "Open navigation menu");
+    });
+});
